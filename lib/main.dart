@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 void main() {
-  runApp(BooksApp());
+  runApp(NestedRouterDemo());
 }
 
 class Book {
@@ -11,12 +11,12 @@ class Book {
   Book(this.title, this.author);
 }
 
-class BooksApp extends StatefulWidget {
+class NestedRouterDemo extends StatefulWidget {
   @override
-  State<StatefulWidget> createState() => _BooksAppState();
+  _NestedRouterDemoState createState() => _NestedRouterDemoState();
 }
 
-class _BooksAppState extends State<BooksApp> {
+class _NestedRouterDemoState extends State<NestedRouterDemo> {
   BookRouterDelegate _routerDelegate = BookRouterDelegate();
   BookRouteInformationParser _routeInformationParser =
       BookRouteInformationParser();
@@ -31,39 +31,82 @@ class _BooksAppState extends State<BooksApp> {
   }
 }
 
+class BooksAppState extends ChangeNotifier {
+  int _selectedIndex;
+
+  Book? _selectedBook;
+
+  final List<Book> books = [
+    Book('Stranger in a Strange Land', 'Robert A. Heinlein'),
+    Book('Foundation', 'Isaac Asimov'),
+    Book('Fahrenheit 451', 'Ray Bradbury'),
+  ];
+
+  BooksAppState() : _selectedIndex = 0;
+
+  int get selectedIndex => _selectedIndex;
+
+  set selectedIndex(int idx) {
+    _selectedIndex = idx;
+    if (_selectedIndex == 1) {
+      // Remove this line if you want to keep the selected book when navigating
+      // between "settings" and "home" which book was selected when Settings is
+      // tapped.
+      selectedBook = null;
+    }
+    notifyListeners();
+  }
+
+  Book? get selectedBook => _selectedBook;
+
+  set selectedBook(Book? book) {
+    _selectedBook = book;
+    notifyListeners();
+  }
+
+  int getSelectedBookById() {
+    if (!books.contains(_selectedBook)) return 0;
+    return books.indexOf(_selectedBook!);
+  }
+
+  void setSelectedBookById(int id) {
+    if (id < 0 || id > books.length - 1) {
+      return;
+    }
+
+    _selectedBook = books[id];
+    notifyListeners();
+  }
+}
+
 class BookRouteInformationParser extends RouteInformationParser<BookRoutePath> {
   @override
   Future<BookRoutePath> parseRouteInformation(
       RouteInformation routeInformation) async {
     final uri = Uri.parse(routeInformation.location!);
-    // Handle '/'
-    if (uri.pathSegments.length == 0) {
-      return BookRoutePath.home();
-    }
 
-    // Handle '/book/:id'
-    if (uri.pathSegments.length == 2) {
-      if (uri.pathSegments.first != 'book') return BookRoutePath.unknown();
-      var remaining = uri.pathSegments[1];
-      var id = int.tryParse(remaining);
-      if (id == null) return BookRoutePath.unknown();
-      return BookRoutePath.details(id);
+    if (uri.pathSegments.isNotEmpty && uri.pathSegments.first == 'settings') {
+      return BooksSettingsPath();
+    } else {
+      if (uri.pathSegments.length >= 2) {
+        if (uri.pathSegments[0] == 'book') {
+          return BooksDetailsPath(int.tryParse(uri.pathSegments[1])!);
+        }
+      }
+      return BooksListPath();
     }
-
-    // Handle unknown routes
-    return BookRoutePath.unknown();
   }
 
   @override
-  RouteInformation? restoreRouteInformation(BookRoutePath path) {
-    if (path.isUnknown) {
-      return RouteInformation(location: '/404');
+  RouteInformation? restoreRouteInformation(BookRoutePath configuration) {
+    if (configuration is BooksListPath) {
+      return RouteInformation(location: '/home');
     }
-    if (path.isHomePage) {
-      return RouteInformation(location: '/');
+    if (configuration is BooksSettingsPath) {
+      return RouteInformation(location: '/settings');
     }
-    if (path.isDetailsPage) {
-      return RouteInformation(location: '/book/${path.id}');
+    if (configuration is BooksDetailsPath) {
+      return RouteInformation(location: '/book/${configuration.id}');
     }
     return null;
   }
@@ -73,24 +116,22 @@ class BookRouterDelegate extends RouterDelegate<BookRoutePath>
     with ChangeNotifier, PopNavigatorRouterDelegateMixin<BookRoutePath> {
   final GlobalKey<NavigatorState> navigatorKey;
 
-  Book? _selectedBook;
-  bool show404 = false;
+  BooksAppState appState = BooksAppState();
 
-  List<Book> books = [
-    Book('Left Hand of Darkness', 'Ursula K. Le Guin'),
-    Book('Too Like the Lightning', 'Ada Palmer'),
-    Book('Kindred', 'Octavia E. Butler'),
-  ];
-
-  BookRouterDelegate() : navigatorKey = GlobalKey<NavigatorState>();
+  BookRouterDelegate() : navigatorKey = GlobalKey<NavigatorState>() {
+    appState.addListener(notifyListeners);
+  }
 
   BookRoutePath get currentConfiguration {
-    if (show404) {
-      return BookRoutePath.unknown();
+    if (appState.selectedIndex == 1) {
+      return BooksSettingsPath();
+    } else {
+      if (appState.selectedBook == null) {
+        return BooksListPath();
+      } else {
+        return BooksDetailsPath(appState.getSelectedBookById());
+      }
     }
-    return _selectedBook == null
-        ? BookRoutePath.home()
-        : BookRoutePath.details(books.indexOf(_selectedBook!));
   }
 
   @override
@@ -99,27 +140,18 @@ class BookRouterDelegate extends RouterDelegate<BookRoutePath>
       key: navigatorKey,
       pages: [
         MaterialPage(
-          key: ValueKey('BooksListPage'),
-          child: BooksListScreen(
-            books: books,
-            onTapped: _handleBookTapped,
-          ),
+          child: AppShell(appState: appState),
         ),
-        if (show404)
-          MaterialPage(key: ValueKey('UnknownPage'), child: UnknownScreen())
-        else if (_selectedBook != null)
-          BookDetailsPage(book: _selectedBook)
       ],
       onPopPage: (route, result) {
         if (!route.didPop(result)) {
           return false;
         }
 
-        // Update the list of pages by setting _selectedBook to null
-        _selectedBook = null;
-        show404 = false;
+        if (appState.selectedBook != null) {
+          appState.selectedBook = null;
+        }
         notifyListeners();
-
         return true;
       },
     );
@@ -127,68 +159,175 @@ class BookRouterDelegate extends RouterDelegate<BookRoutePath>
 
   @override
   Future<void> setNewRoutePath(BookRoutePath path) async {
-    if (path.isUnknown) {
-      _selectedBook = null;
-      show404 = true;
+    if (path is BooksListPath) {
+      appState.selectedIndex = 0;
+      appState.selectedBook = null;
+    } else if (path is BooksSettingsPath) {
+      appState.selectedIndex = 1;
+    } else if (path is BooksDetailsPath) {
+      appState.setSelectedBookById(path.id);
+    }
+  }
+}
+
+// Routes
+abstract class BookRoutePath {}
+
+class BooksListPath extends BookRoutePath {}
+
+class BooksSettingsPath extends BookRoutePath {}
+
+class BooksDetailsPath extends BookRoutePath {
+  final int id;
+
+  BooksDetailsPath(this.id);
+}
+
+// Widget that contains the AdaptiveNavigationScaffold
+class AppShell extends StatefulWidget {
+  final BooksAppState appState;
+
+  AppShell({
+    required this.appState,
+  });
+
+  @override
+  _AppShellState createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  late InnerRouterDelegate _routerDelegate;
+  late ChildBackButtonDispatcher _backButtonDispatcher;
+
+  void initState() {
+    super.initState();
+    _routerDelegate = InnerRouterDelegate(widget.appState);
+  }
+
+  @override
+  void didUpdateWidget(covariant AppShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _routerDelegate.appState = widget.appState;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Defer back button dispatching to the child router
+    _backButtonDispatcher = Router.of(context)
+        .backButtonDispatcher!
+        .createChildBackButtonDispatcher();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    var appState = widget.appState;
+
+    // Claim priority, If there are parallel sub router, you will need
+    // to pick which one should take priority;
+    _backButtonDispatcher.takePriority();
+
+    return Scaffold(
+      appBar: AppBar(),
+      body: Router(
+        routerDelegate: _routerDelegate,
+        backButtonDispatcher: _backButtonDispatcher,
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        items: [
+          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.settings), label: 'Settings'),
+        ],
+        currentIndex: appState.selectedIndex,
+        onTap: (newIndex) {
+          appState.selectedIndex = newIndex;
+        },
+      ),
+    );
+  }
+}
+
+class InnerRouterDelegate extends RouterDelegate<BookRoutePath>
+    with ChangeNotifier, PopNavigatorRouterDelegateMixin<BookRoutePath> {
+  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  BooksAppState get appState => _appState;
+  BooksAppState _appState;
+  set appState(BooksAppState value) {
+    if (value == _appState) {
       return;
     }
+    _appState = value;
+    notifyListeners();
+  }
 
-    if (path.isDetailsPage) {
-      if (path.id! < 0 || path.id! > books.length - 1) {
-        show404 = true;
-        return;
-      }
+  InnerRouterDelegate(this._appState);
 
-      _selectedBook = books[path.id!];
-    } else {
-      _selectedBook = null;
-    }
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      key: navigatorKey,
+      pages: [
+        if (appState.selectedIndex == 0) ...[
+          FadeAnimationPage(
+            child: BooksListScreen(
+              books: appState.books,
+              onTapped: _handleBookTapped,
+            ),
+            key: ValueKey('BooksListPage'),
+          ),
+          if (appState.selectedBook != null)
+            MaterialPage(
+              key: ValueKey(appState.selectedBook),
+              child: BookDetailsScreen(book: appState.selectedBook),
+            ),
+        ] else
+          FadeAnimationPage(
+            child: SettingsScreen(),
+            key: ValueKey('SettingsPage'),
+          ),
+      ],
+      onPopPage: (route, result) {
+        appState.selectedBook = null;
+        notifyListeners();
+        return route.didPop(result);
+      },
+    );
+  }
 
-    show404 = false;
+  @override
+  Future<void> setNewRoutePath(BookRoutePath path) async {
+    // This is not required for inner router delegate because it does not
+    // parse route
+    assert(false);
   }
 
   void _handleBookTapped(Book book) {
-    _selectedBook = book;
+    appState.selectedBook = book;
     notifyListeners();
   }
 }
 
-class BookDetailsPage extends Page {
-  final Book? book;
+class FadeAnimationPage extends Page {
+  final Widget child;
 
-  BookDetailsPage({
-    this.book,
-  }) : super(key: ValueKey(book));
+  FadeAnimationPage({LocalKey? key, required this.child}) : super(key: key);
 
   Route createRoute(BuildContext context) {
-    return MaterialPageRoute(
+    return PageRouteBuilder(
       settings: this,
-      builder: (BuildContext context) {
-        return BookDetailsScreen(book: book);
+      pageBuilder: (context, animation, animation2) {
+        var curveTween = CurveTween(curve: Curves.easeIn);
+        return FadeTransition(
+          opacity: animation.drive(curveTween),
+          child: child,
+        );
       },
     );
   }
 }
 
-class BookRoutePath {
-  final int? id;
-  final bool isUnknown;
-
-  BookRoutePath.home()
-      : id = null,
-        isUnknown = false;
-
-  BookRoutePath.details(this.id) : isUnknown = false;
-
-  BookRoutePath.unknown()
-      : id = null,
-        isUnknown = true;
-
-  bool get isHomePage => id == null;
-
-  bool get isDetailsPage => id != null;
-}
-
+// Screens
 class BooksListScreen extends StatelessWidget {
   final List<Book> books;
   final ValueChanged<Book> onTapped;
@@ -201,7 +340,6 @@ class BooksListScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
       body: ListView(
         children: [
           for (var book in books)
@@ -220,18 +358,23 @@ class BookDetailsScreen extends StatelessWidget {
   final Book? book;
 
   BookDetailsScreen({
-     this.book,
+    this.book,
   });
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
       body: Padding(
         padding: const EdgeInsets.all(8.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: Text('Back'),
+            ),
             if (book != null) ...[
               Text(book!.title, style: Theme.of(context).textTheme.headline6),
               Text(book!.author, style: Theme.of(context).textTheme.subtitle1),
@@ -243,13 +386,12 @@ class BookDetailsScreen extends StatelessWidget {
   }
 }
 
-class UnknownScreen extends StatelessWidget {
+class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
       body: Center(
-        child: Text('404!'),
+        child: Text('Settings screen'),
       ),
     );
   }
